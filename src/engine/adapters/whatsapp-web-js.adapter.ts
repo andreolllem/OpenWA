@@ -271,7 +271,10 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async sendTextMessage(chatId: string, text: string): Promise<MessageResult> {
     this.ensureReady();
-    const msg = await this.client!.sendMessage(chatId, text);
+    const number = chatId.replace(/@c\.us$/, '');
+    const numberId = await this.client!.getNumberId(number);
+    const resolvedId = numberId ? numberId._serialized : chatId;
+    const msg = await this.client!.sendMessage(resolvedId, text);
     return {
       id: msg.id._serialized,
       timestamp: msg.timestamp,
