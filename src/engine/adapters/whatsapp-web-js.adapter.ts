@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
+import { Client, LocalAuth, Message, MessageMedia } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode';
 import * as path from 'path';
 import {
@@ -595,23 +595,83 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   }
 
   // Reactions (Phase 3)
+  /**
+   * Finds a message by its serialized id, without going through the chat.
+   *
+   * The chat route (getChatById + fetchMessages) fails before it can even
+   * look: a @c.us id raises "No LID for user" and a @lid id raises an
+   * internal WhatsApp error, so every reaction came back as a 500. Both are
+   * chat-resolution failures, not reaction failures — the message itself is
+   * reachable by id. The chat scan is kept as a fallback for the case the
+   * store no longer holds the message, and its failure is logged rather than
+   * thrown, so the caller sees the original "not found" instead of a
+   * resolution error from a fallback.
+   */
+  private async findMessage(chatId: string, messageId: string): Promise<Message | null> {
+    try {
+      const direct = await this.client!.getMessageById(messageId);
+      if (direct) return direct;
+    } catch (err) {
+      this.logger.warn(
+        `getMessageById failed for ${messageId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      const chat = await this.client!.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 100 });
+      return messages.find(m => m.id._serialized === messageId) ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `chat scan failed for ${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
   async reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void> {
     this.ensureReady();
-    const chat = await this.client!.getChatById(chatId);
-    const messages = await chat.fetchMessages({ limit: 100 });
-    const message = messages.find(m => m.id._serialized === messageId);
+    const message = await this.findMessage(chatId, messageId);
     if (!message) {
       throw new Error(`Message ${messageId} not found in chat ${chatId}`);
     }
-    await (message as MessageWithReactions).react(emoji);
+    void message; // existence check only — the reaction goes by id, below.
+    // Not message.react(): it calls client.sendReaction(this.id._serialized),
+    // and in current WhatsApp Web builds the message model carries no
+    // _serialized — the page then hits `if (!messageId) return null` and
+    // no-ops without throwing, so every reaction reported success and none
+    // appeared. The id the caller handed us is the one that resolves, so send
+    // with it, and make a miss an error instead of silence.
+    const sent = await (this.client! as unknown as {
+      pupPage: { evaluate: (fn: unknown, ...args: unknown[]) => Promise<string> };
+    }).pupPage
+      .evaluate(
+        async (id: string, reaction: string) => {
+          const w = window as unknown as { require: (m: string) => any };
+          const coll = w.require('WAWebCollections');
+          const msg =
+            coll.Msg.get(id) || (await coll.Msg.getMessagesById([id]))?.messages?.[0];
+          if (!msg) return 'message-not-in-store';
+          await w.require('WAWebSendReactionMsgAction').sendReactionToMsg(msg, reaction);
+          return 'sent';
+        },
+        messageId,
+        emoji,
+      )
+      .catch((err: unknown) => {
+        this.logger.error(
+          `react failed for ${messageId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      });
+    if (sent !== 'sent') {
+      throw new Error(`Reaction not delivered for ${messageId}: ${sent}`);
+    }
     this.logger.log(`Reacted to message ${messageId} with ${emoji || '(removed)'}`);
   }
 
   async getMessageReactions(chatId: string, messageId: string): Promise<MessageReaction[]> {
     this.ensureReady();
-    const chat = await this.client!.getChatById(chatId);
-    const messages = await chat.fetchMessages({ limit: 100 });
-    const message = messages.find(m => m.id._serialized === messageId);
+    const message = await this.findMessage(chatId, messageId);
     if (!message) {
       throw new Error(`Message ${messageId} not found in chat ${chatId}`);
     }
