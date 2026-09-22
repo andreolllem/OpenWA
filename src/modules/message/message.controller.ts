@@ -218,6 +218,23 @@ export class MessageController {
     return this.messageService.forward(sessionId, dto);
   }
 
+  @Post('typing')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Set chat typing presence' })
+  @ApiParam({ name: 'sessionId', description: 'Session ID' })
+  @ApiResponse({ status: 200, description: 'Typing presence updated' })
+  @ApiResponse({
+    status: 400,
+    description: 'Session not active, invalid body, or engine without typing support',
+  })
+  async setTyping(
+    @Param('sessionId') sessionId: string,
+    @Body() dto: { chatId: string; typing: boolean },
+  ): Promise<{ success: boolean }> {
+    return this.messageService.setTyping(sessionId, dto);
+  }
+
   // ========== Phase 3: Reactions ==========
 
   @Post('react')

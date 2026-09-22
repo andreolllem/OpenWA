@@ -234,6 +234,14 @@ export interface IWhatsAppEngine {
 
   // Reactions (Phase 3)
   reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void>;
+
+  /**
+   * Presença de digitação ("digitando…"/"gravando…").
+   *
+   * Opcional: nem todo motor expõe estado de chat, e o serviço recusa o
+   * pedido com 400 quando o motor ativo não implementa.
+   */
+  setTyping?(chatId: string, typing: boolean): Promise<void>;
   getMessageReactions(chatId: string, messageId: string): Promise<MessageReaction[]>;
 
   // Contacts

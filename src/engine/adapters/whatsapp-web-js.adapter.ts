@@ -50,6 +50,24 @@ export interface WhatsAppWebJsConfig {
   };
 }
 
+/**
+ * O id serializado de uma mensagem, mesmo quando o modelo não o traz pronto.
+ *
+ * Ordem: o campo normal; o nome minificado que algumas builds usam; e, por
+ * último, a reconstrução a partir das partes, que é o formato que o próprio
+ * WhatsApp Web monta (fromMe_remote_id).
+ */
+function resolveSerializedMessageId(id: unknown): string | undefined {
+  const obj = id && typeof id === 'object' ? (id as Record<string, unknown>) : null;
+  if (!obj) return undefined;
+  if (typeof obj._serialized === 'string' && obj._serialized) return obj._serialized;
+  if (typeof obj.$1 === 'string' && obj.$1) return obj.$1;
+  if (typeof obj.remote === 'string' && typeof obj.id === 'string') {
+    return `${Boolean(obj.fromMe)}_${obj.remote}_${obj.id}`;
+  }
+  return undefined;
+}
+
 export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngine {
   private client: Client | null = null;
   private status: EngineStatus = EngineStatus.DISCONNECTED;
@@ -143,8 +161,30 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     this.client.on('message', async msg => {
       try {
+        // Current WhatsApp Web builds do not always populate id._serialized on
+        // the message model — the field arrives under a minified name, or only
+        // as its parts. An inbound message with no id cannot be acked,
+        // deduplicated or reacted to, so rebuild it rather than drop it, and
+        // write it back so everything downstream (including whatsapp-web.js
+        // itself) sees a normal message.
+        const serializedMessageId = resolveSerializedMessageId(msg.id);
+        const usedMessageIdCompatibilityFallback = Boolean(
+          msg.id && !(msg.id as { _serialized?: string })._serialized && serializedMessageId,
+        );
+        if (usedMessageIdCompatibilityFallback && serializedMessageId) {
+          try {
+            (msg.id as { _serialized?: string })._serialized = serializedMessageId;
+          } catch {
+            try {
+              (msg as { id: unknown }).id = { ...msg.id, _serialized: serializedMessageId };
+            } catch {
+              this.logger.warn('Could not apply WhatsApp message id compatibility fallback');
+            }
+          }
+        }
+
         const incomingMessage: IncomingMessage = {
-          id: msg.id._serialized,
+          id: serializedMessageId ?? '',
           from: msg.from,
           to: msg.to,
           chatId: msg.from,
@@ -167,7 +207,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
               };
             }
           } catch (error) {
-            this.logger.error('Error downloading media', String(error));
+            // O id resolvido entra no log porque a falha de mídia quase sempre
+            // acompanha uma mensagem cujo id veio fora do formato esperado.
+            this.logger.error('Error downloading media', String(error), {
+              messageIdResolved: Boolean(serializedMessageId),
+              messageIdCompatibilityFallback: usedMessageIdCompatibilityFallback,
+              messageType: typeof msg.type === 'string' ? msg.type : 'unknown',
+            } as never);
           }
         }
 
@@ -275,10 +321,38 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     const numberId = await this.client!.getNumberId(number);
     const resolvedId = numberId ? numberId._serialized : chatId;
     const msg = await this.client!.sendMessage(resolvedId, text);
+    // whatsapp-web.js may resolve sendMessage without returning a Message.
+    // The message has gone out either way; turning that into an HTTP 500
+    // would make a delivered message look like a failure and invite a
+    // duplicate send.
     return {
-      id: msg.id._serialized,
-      timestamp: msg.timestamp,
+      id: msg?.id?._serialized ?? '',
+      timestamp: msg?.timestamp ?? Math.floor(Date.now() / 1000),
     };
+  }
+
+  /**
+   * Presença de digitação. Não existe na API pública do whatsapp-web.js, então
+   * chama o estado de chat pela própria página — é o mesmo caminho que a
+   * interface do WhatsApp Web usa.
+   *
+   * O número é resolvido como no envio: um chatId que ainda não está na lista
+   * de conversas precisa virar o id que o protocolo reconhece.
+   */
+  async setTyping(chatId: string, typing: boolean): Promise<void> {
+    this.ensureReady();
+    const number = chatId.replace(/@c\.us$/, '');
+    const numberId = await this.client!.getNumberId(number);
+    const resolvedId = numberId ? numberId._serialized : chatId;
+    await (this.client! as unknown as {
+      pupPage: { evaluate: (fn: unknown, arg: unknown) => Promise<void> };
+    }).pupPage.evaluate(
+      ({ chatId: id, state }: { chatId: string; state: string }) => {
+        const w = window as unknown as { WWebJS: { sendChatstate: (s: string, c: string) => unknown } };
+        return w.WWebJS.sendChatstate(state, id);
+      },
+      { chatId: resolvedId, state: typing ? 'typing' : 'stop' },
+    );
   }
 
   async sendImageMessage(chatId: string, media: MediaInput): Promise<MessageResult> {

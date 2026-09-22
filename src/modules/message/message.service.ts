@@ -446,6 +446,27 @@ export class MessageService {
 
   // ========== Phase 3: Reactions ==========
 
+  /**
+   * Liga ou desliga a presença de digitação em uma conversa.
+   *
+   * Existe para que um assistente que demora a responder não pareça mudo: o
+   * canal acende o indicador enquanto busca e apaga ao responder.
+   */
+  async setTyping(
+    sessionId: string,
+    dto: { chatId: string; typing: boolean },
+  ): Promise<{ success: boolean }> {
+    if (!dto || typeof dto.chatId !== 'string' || typeof dto.typing !== 'boolean') {
+      throw new BadRequestException('chatId and typing are required');
+    }
+    const engine = this.getEngine(sessionId);
+    if (typeof engine.setTyping !== 'function') {
+      throw new BadRequestException('Typing presence is not supported by the active engine');
+    }
+    await engine.setTyping(dto.chatId, dto.typing);
+    return { success: true };
+  }
+
   async reactToMessage(sessionId: string, dto: { chatId: string; messageId: string; emoji: string }): Promise<void> {
     const engine = this.getEngine(sessionId);
     await engine.reactToMessage(dto.chatId, dto.messageId, dto.emoji);
