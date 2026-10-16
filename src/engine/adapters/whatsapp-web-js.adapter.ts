@@ -198,7 +198,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         // Handle media
         if (msg.hasMedia) {
           try {
-            const media = await msg.downloadMedia();
+            const media = await this.downloadInboundMedia(msg, serializedMessageId);
             if (media) {
               incomingMessage.media = {
                 mimetype: media.mimetype,
@@ -353,6 +353,65 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       },
       { chatId: resolvedId, state: typing ? 'typing' : 'stop' },
     );
+  }
+
+  /**
+   * Baixa a mídia de uma mensagem recebida.
+   *
+   * O `msg.downloadMedia()` da whatsapp-web.js 1.34.7 chama o
+   * `downloadAndMaybeDecrypt` do WhatsApp Web sem o `mimetype`. As builds
+   * atuais (visto em 16/10/2026) recusam isso com "InvalidMediaFileType:
+   * Unexpected mimetype application/octet-stream for media type image" — a
+   * foto já está baixada na página, só a decifração falha, e o webhook saía
+   * sem mídia. É o mesmo caminho da biblioteca, com o tipo do arquivo; se a
+   * mensagem não for achada na página, cai no método da biblioteca.
+   */
+  private async downloadInboundMedia(
+    msg: Message,
+    serializedMessageId: string | undefined,
+  ): Promise<{ mimetype: string; data: string; filename?: string | null } | undefined> {
+    if (!serializedMessageId) return (await msg.downloadMedia()) ?? undefined;
+    const page = (this.client as unknown as {
+      pupPage: { evaluate: <T>(fn: (id: string) => Promise<T>, arg: string) => Promise<T> };
+    }).pupPage;
+    const result = await page.evaluate(async (msgId: string) => {
+      const w = window as unknown as {
+        require: (m: string) => any;
+        WWebJS: { arrayBufferToBase64Async: (b: ArrayBuffer) => Promise<string> };
+      };
+      const Msg = w.require('WAWebCollections').Msg;
+      const m = Msg.get(msgId) || (await Msg.getMessagesById([msgId]))?.messages?.[0];
+      if (!m) return { notFound: true as const };
+      if (!m.mediaData || m.mediaData.mediaStage === 'REUPLOADING') return null;
+      if (m.mediaData.mediaStage !== 'RESOLVED') {
+        await m.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+      }
+      if (String(m.mediaData.mediaStage).includes('ERROR') || m.mediaData.mediaStage === 'FETCHING') return null;
+      const qpl = { addAnnotations() { return this; }, addPoint() { return this; } };
+      try {
+        const decrypted = await w.require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt({
+          directPath: m.directPath,
+          encFilehash: m.encFilehash,
+          filehash: m.filehash,
+          mediaKey: m.mediaKey,
+          mediaKeyTimestamp: m.mediaKeyTimestamp,
+          type: m.type,
+          mimetype: m.mimetype,
+          signal: new AbortController().signal,
+          downloadQpl: qpl,
+        });
+        return {
+          data: await w.WWebJS.arrayBufferToBase64Async(decrypted),
+          mimetype: m.mimetype as string,
+          filename: (m.filename as string | undefined) ?? null,
+        };
+      } catch (e) {
+        if ((e as { status?: number }).status === 404) return null;
+        throw e;
+      }
+    }, serializedMessageId);
+    if (result && 'notFound' in result) return (await msg.downloadMedia()) ?? undefined;
+    return result ?? undefined;
   }
 
   async sendImageMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
