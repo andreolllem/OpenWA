@@ -32,6 +32,12 @@ export interface IncomingMessage {
   timestamp: number;
   fromMe: boolean;
   isGroup: boolean;
+  /** Em grupo: quem escreveu (from é o grupo). */
+  author?: string;
+  /** Nome que o próprio remetente configurou no WhatsApp (notifyName). */
+  authorName?: string;
+  /** Ids mencionados com @ na mensagem. */
+  mentionedIds?: string[];
   media?: {
     mimetype: string;
     filename?: string;

@@ -195,8 +195,25 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           isGroup: msg.from.endsWith('@g.us'),
         };
 
+        // Em grupo, `from` é o grupo: quem escreveu vem em `author`, e o nome
+        // que a pessoa usa no WhatsApp em notifyName. As menções (@Sophie)
+        // decidem quando a Sophie é chamada. Ids podem vir como objeto nas
+        // builds atuais — mesmo tratamento do id da mensagem.
+        if (incomingMessage.isGroup) {
+          const author = resolveSerializedMessageId(msg.author) ?? (typeof msg.author === 'string' ? msg.author : undefined);
+          if (author) incomingMessage.author = author;
+          const notifyName = (msg as unknown as { _data?: { notifyName?: unknown } })._data?.notifyName;
+          if (typeof notifyName === 'string' && notifyName.trim()) incomingMessage.authorName = notifyName.trim().slice(0, 60);
+          const mentioned = (msg.mentionedIds ?? [])
+            .map((m: unknown) => (typeof m === 'string' ? m : resolveSerializedMessageId(m)))
+            .filter((m: string | undefined): m is string => Boolean(m));
+          if (mentioned.length) incomingMessage.mentionedIds = mentioned;
+        }
+
         // Handle media
-        if (msg.hasMedia) {
+        // Mídia de grupo não é baixada: são fotos e vídeos de terceiros, que o
+        // resumo para o André não lê, e o base64 encheria cada webhook.
+        if (msg.hasMedia && !incomingMessage.isGroup) {
           try {
             const media = await this.downloadInboundMedia(msg, serializedMessageId);
             if (media) {
