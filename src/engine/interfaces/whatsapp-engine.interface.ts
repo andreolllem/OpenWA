@@ -38,6 +38,8 @@ export interface IncomingMessage {
   authorName?: string;
   /** Ids mencionados com @ na mensagem. */
   mentionedIds?: string[];
+  /** Em grupo: a própria conta foi mencionada com @. */
+  mentionsMe?: boolean;
   media?: {
     mimetype: string;
     filename?: string;

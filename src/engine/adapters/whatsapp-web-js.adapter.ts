@@ -74,6 +74,8 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   private qrCode: string | null = null;
   private phoneNumber: string | null = null;
   private pushName: string | null = null;
+  /** Os ids da própria conta (número e LID), só a parte antes do @ — para saber quando foi mencionada. */
+  private ownUsers = new Set<string>();
   private callbacks: EngineEventCallbacks = {};
 
   constructor(private readonly config: WhatsAppWebJsConfig) {
@@ -151,6 +153,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         this.pushName = info?.pushname || null;
         this.setStatus(EngineStatus.READY);
         this.callbacks.onReady?.(this.phoneNumber || '', this.pushName || '');
+        void this.loadOwnUsers();
       } catch (error) {
         this.logger.error('Error getting client info', String(error));
         this.setStatus(EngineStatus.READY);
@@ -207,7 +210,11 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           const mentioned = (msg.mentionedIds ?? [])
             .map((m: unknown) => (typeof m === 'string' ? m : resolveSerializedMessageId(m)))
             .filter((m: string | undefined): m is string => Boolean(m));
-          if (mentioned.length) incomingMessage.mentionedIds = mentioned;
+          if (mentioned.length) {
+            incomingMessage.mentionedIds = mentioned;
+            if (!this.ownUsers.size) await this.loadOwnUsers();
+            incomingMessage.mentionsMe = mentioned.some((m: string) => this.ownUsers.has(m.split('@')[0]));
+          }
         }
 
         // Handle media
@@ -334,6 +341,11 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async sendTextMessage(chatId: string, text: string): Promise<MessageResult> {
     this.ensureReady();
+    // Grupo vai direto: getNumberId é só para número de pessoa.
+    if (chatId.endsWith('@g.us')) {
+      const sent = await this.client!.sendMessage(chatId, text);
+      return { id: sent?.id?._serialized ?? '', timestamp: sent?.timestamp ?? Math.floor(Date.now() / 1000) };
+    }
     const number = chatId.replace(/@c\.us$/, '');
     const numberId = await this.client!.getNumberId(number);
     const resolvedId = numberId ? numberId._serialized : chatId;
@@ -346,6 +358,32 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       id: msg?.id?._serialized ?? '',
       timestamp: msg?.timestamp ?? Math.floor(Date.now() / 1000),
     };
+  }
+
+  /**
+   * Os ids da conta conectada. Em grupo, a menção pode vir pelo número (@c.us)
+   * ou pelo LID (@lid), conforme o grupo — guarda os dois. Falha não quebra
+   * nada: sem ids, mentionsMe sai false e a Sophie só registra.
+   */
+  private async loadOwnUsers(): Promise<void> {
+    try {
+      const ids = await (this.client as unknown as {
+        pupPage: { evaluate: (fn: () => unknown) => Promise<unknown> };
+      }).pupPage.evaluate(() => {
+        const w = window as unknown as { require: (m: string) => Record<string, () => { _serialized?: string } | null> };
+        const me = w.require('WAWebUserPrefsMeUser');
+        return [me.getMaybeMePnUser?.()?._serialized, me.getMaybeMeLidUser?.()?._serialized];
+      });
+      const users = (Array.isArray(ids) ? ids : [])
+        .filter((id): id is string => typeof id === 'string' && id.includes('@'))
+        .map((id) => id.split('@')[0].split(':')[0]);
+      const wid = this.client?.info?.wid?._serialized;
+      if (wid) users.push(wid.split('@')[0]);
+      this.ownUsers = new Set(users.filter(Boolean));
+      this.logger.log(`Own ids loaded: ${this.ownUsers.size}`);
+    } catch (error) {
+      this.logger.warn('Could not load own ids', String(error));
+    }
   }
 
   /**
