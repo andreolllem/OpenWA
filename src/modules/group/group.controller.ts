@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/swagger';
+import { ArrayMaxSize, IsArray, IsString, MaxLength } from 'class-validator';
 import { SessionService } from '../session/session.service';
 
 // DTOs
@@ -20,7 +21,12 @@ class GroupDescriptionDto {
   description: string;
 }
 
+// Com regras: o ValidationPipe global (forbidNonWhitelisted) recusa campo sem decorador.
 class ResolveMentionsDto {
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsString({ each: true })
+  @MaxLength(60, { each: true })
   names: string[];
 }
 
