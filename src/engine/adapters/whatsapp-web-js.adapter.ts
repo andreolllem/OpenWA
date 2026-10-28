@@ -382,26 +382,74 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
    * Participantes do grupo com os nomes que dá para comparar: o salvo nos
    * contatos da conta, o que a pessoa usa no WhatsApp e o curto. A própria
    * conta fica de fora.
+   *
+   * Lê direto da página (GroupMetadata + Contact): o `getChatById` da
+   * whatsapp-web.js 1.34.7 falha nas builds atuais do WhatsApp Web com um erro
+   * interno ("r: r", visto em 28/10/2026), como já acontecia nas reações. O
+   * caminho da biblioteca fica como reserva.
    */
   private async groupMentionCandidates(groupId: string): Promise<MentionCandidate[]> {
+    if (!this.ownUsers.size) await this.loadOwnUsers();
+    let raw: { id: string; labels: string[] }[];
+    try {
+      raw = await this.groupParticipantsFromPage(groupId);
+    } catch (error) {
+      this.logger.warn(`group participants from the page failed: ${error instanceof Error ? error.message : String(error)}`);
+      raw = await this.groupParticipantsFromLibrary(groupId);
+    }
+    const out: MentionCandidate[] = [];
+    for (const { id, labels } of raw) {
+      if (this.ownUsers.has(id.split('@')[0].split(':')[0])) continue;
+      const clean: string[] = [];
+      for (const v of labels) {
+        if (typeof v === 'string' && v.trim() && !clean.includes(v.trim())) clean.push(v.trim());
+      }
+      if (clean.length) out.push({ id, labels: clean });
+    }
+    this.logger.log(`Group mention candidates: ${out.length} of ${raw.length} participant(s) with a name`);
+    return out;
+  }
+
+  private async groupParticipantsFromPage(groupId: string): Promise<{ id: string; labels: string[] }[]> {
+    const result = await (this.client as unknown as {
+      pupPage: { evaluate: <T>(fn: (gid: string) => Promise<T>, arg: string) => Promise<T> };
+    }).pupPage.evaluate(async (gid: string) => {
+      const w = window as unknown as { require: (m: string) => any };
+      const coll = w.require('WAWebCollections');
+      const wid = w.require('WAWebWidFactory').createWid(gid);
+      let meta = coll.GroupMetadata.get(wid);
+      if (!meta && typeof coll.GroupMetadata.find === 'function') meta = await coll.GroupMetadata.find(wid);
+      if (!meta) return { error: 'group_not_found' };
+      const parts = meta.participants?.getModelsArray?.() ?? meta.participants?._models ?? [];
+      return {
+        participants: parts.map((p: any) => {
+          const id = p.id?._serialized ?? String(p.id);
+          const c = coll.Contact.get(p.id) ?? coll.Contact.get(id);
+          return {
+            id,
+            labels: [c?.name, c?.pushname, c?.shortName, c?.verifiedName, c?.notifyName].filter(
+              (v: unknown) => typeof v === 'string',
+            ),
+          };
+        }),
+      };
+    }, groupId);
+    if (!result || (result as { error?: string }).error) throw new Error((result as { error?: string })?.error ?? 'no_result');
+    return (result as { participants: { id: string; labels: string[] }[] }).participants;
+  }
+
+  private async groupParticipantsFromLibrary(groupId: string): Promise<{ id: string; labels: string[] }[]> {
     const chat = await this.client!.getChatById(groupId);
     if (!chat.isGroup) throw new Error('not_a_group');
-    if (!this.ownUsers.size) await this.loadOwnUsers();
-    const participants = (chat as unknown as GroupChat).participants || [];
-    const out: MentionCandidate[] = [];
-    for (const p of participants) {
+    const out: { id: string; labels: string[] }[] = [];
+    for (const p of (chat as unknown as GroupChat).participants || []) {
       const id = String(p.id._serialized);
-      if (this.ownUsers.has(id.split('@')[0])) continue;
-      const labels: string[] = [];
       try {
         const contact = await this.client!.getContactById(id);
-        for (const v of [contact.name, contact.pushname, contact.shortName]) {
-          if (typeof v === 'string' && v.trim() && !labels.includes(v.trim())) labels.push(v.trim());
-        }
+        out.push({ id, labels: [contact.name, contact.pushname, contact.shortName].filter((v): v is string => typeof v === 'string') });
       } catch {
         // Sem contato, a pessoa só não pode ser achada pelo nome.
       }
-      if (labels.length) out.push({ id, labels });
     }
     return out;
   }
