@@ -20,6 +20,10 @@ class GroupDescriptionDto {
   description: string;
 }
 
+class ResolveMentionsDto {
+  names: string[];
+}
+
 @ApiTags('groups')
 @Controller('sessions/:sessionId/groups')
 export class GroupController {
@@ -47,6 +51,23 @@ export class GroupController {
       throw new Error(`Group ${groupId} not found`);
     }
     return group;
+  }
+
+  @Post(':groupId/mentions/resolve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Find group participants by name (no numbers returned)' })
+  @ApiParam({ name: 'sessionId', description: 'Session ID' })
+  @ApiParam({ name: 'groupId', description: 'Group ID (e.g., 120363xxx@g.us)' })
+  @ApiBody({ type: ResolveMentionsDto })
+  async resolveMentions(
+    @Param('sessionId') sessionId: string,
+    @Param('groupId') groupId: string,
+    @Body() dto: ResolveMentionsDto,
+  ) {
+    const engine = this.getEngine(sessionId);
+    const names = Array.isArray(dto?.names) ? dto.names.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.slice(0, 60)) : [];
+    if (!engine.resolveGroupMentions) throw new Error('Mentions not supported by this engine');
+    return { results: await engine.resolveGroupMentions(groupId, names) };
   }
 
   @Post()

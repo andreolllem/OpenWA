@@ -1,3 +1,4 @@
+import type { MentionResolution } from '../group-mentions';
 // WhatsApp Engine Interface - Abstract layer for WA engines
 
 export enum EngineStatus {
@@ -225,7 +226,10 @@ export interface IWhatsAppEngine {
   getPushName(): string | null;
 
   // Messaging - Basic
-  sendTextMessage(chatId: string, text: string): Promise<MessageResult>;
+  /** `mentionNames`: só em grupo — o texto traz "@Nome" de cada pessoa a marcar. */
+  sendTextMessage(chatId: string, text: string, mentionNames?: string[]): Promise<MessageResult>;
+  /** Acha participantes do grupo pelo nome; nunca devolve número nem id. */
+  resolveGroupMentions?(groupId: string, names: string[]): Promise<Omit<MentionResolution, 'id'>[]>;
   sendImageMessage(chatId: string, media: MediaInput): Promise<MessageResult>;
   sendVideoMessage(chatId: string, media: MediaInput): Promise<MessageResult>;
   sendAudioMessage(chatId: string, media: MediaInput): Promise<MessageResult>;

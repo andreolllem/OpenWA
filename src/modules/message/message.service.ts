@@ -47,7 +47,7 @@ export class MessageService {
     });
 
     try {
-      const result = await engine.sendTextMessage(finalDto.chatId, finalDto.text);
+      const result = await engine.sendTextMessage(finalDto.chatId, finalDto.text, finalDto.mentionNames);
 
       // Update with actual WhatsApp message ID and status
       message.waMessageId = result.id;

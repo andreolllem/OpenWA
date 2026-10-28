@@ -28,6 +28,7 @@ import {
   PaginatedProducts,
 } from '../interfaces/whatsapp-engine.interface';
 import { createLogger } from '../../common/services/logger.service';
+import { applyMentions, publicResolutions, resolveMentions, type MentionCandidate, type MentionResolution } from '../group-mentions';
 import {
   GroupChat,
   MessageWithReactions,
@@ -339,11 +340,23 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     return this.pushName;
   }
 
-  async sendTextMessage(chatId: string, text: string): Promise<MessageResult> {
+  async sendTextMessage(chatId: string, text: string, mentionNames?: string[]): Promise<MessageResult> {
     this.ensureReady();
     // Grupo vai direto: getNumberId é só para número de pessoa.
     if (chatId.endsWith('@g.us')) {
-      const sent = await this.client!.sendMessage(chatId, text);
+      let body = text;
+      let mentions: string[] | undefined;
+      if (mentionNames?.length) {
+        // Resolve de novo na hora do envio: quem não for achado (ou for mais de
+        // uma pessoa) impede o envio, em vez de mandar sem marcar.
+        const resolved = resolveMentions(mentionNames, await this.groupMentionCandidates(chatId));
+        const applied = applyMentions(text, resolved);
+        body = applied.text;
+        mentions = applied.ids;
+      }
+      const sent = mentions
+        ? await this.client!.sendMessage(chatId, body, { mentions })
+        : await this.client!.sendMessage(chatId, body);
       return { id: sent?.id?._serialized ?? '', timestamp: sent?.timestamp ?? Math.floor(Date.now() / 1000) };
     }
     const number = chatId.replace(/@c\.us$/, '');
@@ -358,6 +371,39 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       id: msg?.id?._serialized ?? '',
       timestamp: msg?.timestamp ?? Math.floor(Date.now() / 1000),
     };
+  }
+
+  async resolveGroupMentions(groupId: string, names: string[]): Promise<Omit<MentionResolution, 'id'>[]> {
+    this.ensureReady();
+    return publicResolutions(resolveMentions(names, await this.groupMentionCandidates(groupId)));
+  }
+
+  /**
+   * Participantes do grupo com os nomes que dá para comparar: o salvo nos
+   * contatos da conta, o que a pessoa usa no WhatsApp e o curto. A própria
+   * conta fica de fora.
+   */
+  private async groupMentionCandidates(groupId: string): Promise<MentionCandidate[]> {
+    const chat = await this.client!.getChatById(groupId);
+    if (!chat.isGroup) throw new Error('not_a_group');
+    if (!this.ownUsers.size) await this.loadOwnUsers();
+    const participants = (chat as unknown as GroupChat).participants || [];
+    const out: MentionCandidate[] = [];
+    for (const p of participants) {
+      const id = String(p.id._serialized);
+      if (this.ownUsers.has(id.split('@')[0])) continue;
+      const labels: string[] = [];
+      try {
+        const contact = await this.client!.getContactById(id);
+        for (const v of [contact.name, contact.pushname, contact.shortName]) {
+          if (typeof v === 'string' && v.trim() && !labels.includes(v.trim())) labels.push(v.trim());
+        }
+      } catch {
+        // Sem contato, a pessoa só não pode ser achada pelo nome.
+      }
+      if (labels.length) out.push({ id, labels });
+    }
+    return out;
   }
 
   /**

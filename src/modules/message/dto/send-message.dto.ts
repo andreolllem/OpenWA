@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, MaxLength, IsUrl, ValidateIf } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, MaxLength, IsUrl, ValidateIf, IsArray, ArrayMaxSize } from 'class-validator';
 
 export class SendTextMessageDto {
   @ApiProperty({
@@ -19,6 +19,18 @@ export class SendTextMessageDto {
   @IsNotEmpty()
   @MaxLength(4096)
   text: string;
+
+  @ApiProperty({
+    description: 'Só em grupo: nomes das pessoas a marcar. O texto traz "@Nome" de cada uma; o adaptador acha a pessoa entre os participantes.',
+    required: false,
+    example: ['Fátima'],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsString({ each: true })
+  @MaxLength(60, { each: true })
+  mentionNames?: string[];
 }
 
 export class SendMediaMessageDto {
