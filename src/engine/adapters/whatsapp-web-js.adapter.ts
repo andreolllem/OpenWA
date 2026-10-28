@@ -417,14 +417,19 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       const w = window as unknown as { require: (m: string) => any };
       const coll = w.require('WAWebCollections');
       const wid = w.require('WAWebWidFactory').createWid(gid);
-      let meta = coll.GroupMetadata.get(wid);
-      if (!meta && typeof coll.GroupMetadata.find === 'function') meta = await coll.GroupMetadata.find(wid);
-      if (!meta) return { error: 'group_not_found' };
+      const metaColl = coll.GroupMetadata || coll.WAWebGroupMetadataCollection;
+      const contacts = coll.Contact || coll.WAWebContactCollection;
+      let meta = coll.Chat?.get?.(wid)?.groupMetadata;
+      if (!meta && metaColl) {
+        meta = metaColl.get(wid);
+        if (!meta && typeof metaColl.find === 'function') meta = await metaColl.find(wid);
+      }
+      if (!meta) return { error: `group_not_found (chat:${!!coll.Chat}, metadata:${!!metaColl})` };
       const parts = meta.participants?.getModelsArray?.() ?? meta.participants?._models ?? [];
       return {
         participants: parts.map((p: any) => {
           const id = p.id?._serialized ?? String(p.id);
-          const c = coll.Contact.get(p.id) ?? coll.Contact.get(id);
+          const c = contacts?.get?.(p.id) ?? contacts?.get?.(id);
           return {
             id,
             labels: [c?.name, c?.pushname, c?.shortName, c?.verifiedName, c?.notifyName].filter(
