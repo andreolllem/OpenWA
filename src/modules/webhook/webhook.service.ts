@@ -11,6 +11,7 @@ import { createLogger } from '../../common/services/logger.service';
 import { QUEUE_NAMES } from '../queue/queue-names';
 import { generateIdempotencyKey, generateDeliveryId } from './utils/idempotency.util';
 import { HookManager } from '../../core/hooks';
+import { clampMaxAgeMinutes, redeliveryDecision, RedeliveryDecision } from './utils/redelivery.util';
 
 export interface WebhookPayload {
   event: string;
@@ -67,6 +68,48 @@ export class WebhookService {
       where: { sessionId },
       order: { createdAt: 'DESC' },
     });
+  }
+
+  /**
+   * Re-queues this session's webhook deliveries that failed (receiver asleep or
+   * unreachable), oldest first, as they were — same payload, same signature.
+   * The receiver deduplicates by message id, so a repeat is harmless.
+   */
+  async redeliverFailed(
+    sessionId: string,
+    maxAgeMinutes?: number,
+  ): Promise<{ queueEnabled: boolean; retried: number; skipped: Partial<Record<RedeliveryDecision, number>> }> {
+    if (!this.queueEnabled || !this.webhookQueue) {
+      return { queueEnabled: false, retried: 0, skipped: {} };
+    }
+    const maxAge = clampMaxAgeMinutes(maxAgeMinutes);
+    const now = Date.now();
+    const failed = await this.webhookQueue.getFailed(0, 999);
+    failed.sort((a, b) => a.timestamp - b.timestamp);
+    let retried = 0;
+    const skipped: Partial<Record<RedeliveryDecision, number>> = {};
+    for (const job of failed) {
+      const decision = redeliveryDecision(
+        { sessionId: job.data?.payload?.sessionId, timestamp: job.timestamp, failedReason: job.failedReason },
+        sessionId,
+        now,
+        maxAge,
+      );
+      if (decision !== 'retry') {
+        skipped[decision] = (skipped[decision] ?? 0) + 1;
+        continue;
+      }
+      await job.retry('failed');
+      retried++;
+    }
+    if (retried > 0) {
+      this.logger.log(`Re-queued ${retried} failed webhook delivery(ies)`, {
+        sessionId,
+        retried,
+        action: 'webhook_redeliver_failed',
+      });
+    }
+    return { queueEnabled: true, retried, skipped };
   }
 
   async findAll(): Promise<Webhook[]> {

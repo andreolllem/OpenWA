@@ -1,5 +1,5 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
+import { Controller, Get, Post, Put, Delete, Param, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
 import { CreateWebhookDto, UpdateWebhookDto, WebhookResponseDto } from './dto';
 import { Webhook } from './entities/webhook.entity';
@@ -34,6 +34,25 @@ export class WebhookController {
   })
   async findBySession(@Param('sessionId') sessionId: string): Promise<Webhook[]> {
     return this.webhookService.findBySession(sessionId);
+  }
+
+  @Post('redeliver-failed')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Re-queue failed webhook deliveries (receiver was unreachable)' })
+  @ApiParam({ name: 'sessionId', description: 'Session ID' })
+  @ApiQuery({
+    name: 'maxAgeMinutes',
+    required: false,
+    type: Number,
+    description: 'Only deliveries newer than this (default 1440, max 10080)',
+  })
+  @ApiResponse({ status: 200, description: 'How many deliveries were re-queued' })
+  async redeliverFailed(
+    @Param('sessionId') sessionId: string,
+    @Query('maxAgeMinutes') maxAgeMinutes?: string,
+  ): Promise<{ queueEnabled: boolean; retried: number; skipped: Partial<Record<string, number>> }> {
+    return this.webhookService.redeliverFailed(sessionId, maxAgeMinutes ? parseInt(maxAgeMinutes, 10) : undefined);
   }
 
   @Get(':id')
